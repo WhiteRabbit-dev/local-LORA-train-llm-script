@@ -828,10 +828,52 @@ class TrainerGUI:
         self.log(f"{quant_method} готов: {self.quant_output}")
 
     def quantize_model(self):
+        """Квантование с ВКЛАДКИ"""
         model_path = self.quant_model_text.get("1.0", 'end-1c').strip()
         if not model_path: 
-            return
-        self.safe_execute(self.quantize_model_final)
+            messagebox.showerror("Ошибка", "Выбери модель!")
+            return        
+        if not os.path.exists(model_path):
+            messagebox.showerror("Ошибка", "Файл не найден!")
+            return        
+        self.quantize_model_final_with_path(model_path)
+    
+    
+    def quantize_model_final_with_path(self, model_path):
+        """Квантование ЛЮБОЙ модели (для вкладки)"""
+        quant_method = self.quant_method.get() or "Q4_K_M"
+        
+        # Временный GGUF если HF-папка
+        if os.path.isdir(model_path):
+            temp_gguf = PROCESS_DIR / f"temp_gguf_{int(time.time())}.gguf"
+            self.log("HF → GGUF...")
+            # Конвертация
+            params = {'hf_path': model_path, 'gguf_path': str(temp_gguf)}
+            import json
+            subprocess.run([str(VENV_PYTHON), str(Path(__file__).parent / "convert.py"), 
+                           json.dumps(params)], creationflags=0x10).check_returncode()
+        else:
+            temp_gguf = Path(model_path)
+        
+        # Квантование
+        self.log(f"Квантуем {quant_method}...")
+        temp_quant = PROCESS_DIR / f"temp_q_{int(time.time())}.gguf"
+        params = {
+            'f16_path': str(temp_gguf),
+            'q_path': str(temp_quant),
+            'quant_method': quant_method
+        }
+        
+        import json
+        result = subprocess.run([str(VENV_PYTHON), str(Path(__file__).parent / "quantize.py"), 
+                               json.dumps(params)], creationflags=0x10)
+        
+        if result.returncode == 0:
+            self.log(f"✅ {temp_quant}")
+            messagebox.showinfo("Готово!", f"Квант: {temp_quant}")
+        else:
+            raise RuntimeError("Квантование упало!")
+
     
     def is_model_dir(self, path_str):
         """Проверяет, является ли каталог валидной моделью HF (f16, GGUF, safetensors и т.п.)"""
