@@ -78,6 +78,7 @@ def safe_run():
         LORA_ALPHA = params['lora_alpha']
         MAX_LEN = params['max_len']
         LORA_TARGETS = params['lora_targets']
+        DROPOUT = params.get('dropout', 0.1)    
 
         log_print(f"Device: {device}")
         log_print(f"Модель: {MODEL_PATH}")
@@ -111,7 +112,7 @@ def safe_run():
         lora_config = LoraConfig(
             r=LORA_R, 
             lora_alpha=LORA_ALPHA, 
-            lora_dropout=0.1,
+            lora_dropout=DROPOUT,
             target_modules=LORA_TARGETS, 
             bias="none", 
             task_type=TaskType.CAUSAL_LM
@@ -131,7 +132,7 @@ def safe_run():
                         if not line: continue
                         try:
                             data = json.loads(line)
-                            text = f"<|im_start|>system\n{data['instruction']}<|im_end|>\n<|im_start|>user\n{data['input']}<|im_end|>\n<|im_start|>assistant\n{data['output']}<|im_end|>"
+                            text = f"<|im_start|>system: {data['instruction']}<|im_end|>\n<|im_start|>user: {data['input']}<|im_end|>\n<|im_start|>assistant: {data['output']}<|im_end|>"
                             self.texts.append(text)
                         except Exception as e:
                             log_error(f"Строка {i}: {e}")

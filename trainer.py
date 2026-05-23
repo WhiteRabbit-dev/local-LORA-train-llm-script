@@ -8,6 +8,10 @@ import threading
 import time
 import traceback
 import importlib.util  # для venv импортов
+import urllib.request
+import zipfile
+import shutil
+
 
 SCRIPT_DIR = Path(__file__).parent.absolute()
 os.chdir(SCRIPT_DIR)
@@ -16,11 +20,17 @@ PROCESS_DIR.mkdir(exist_ok=True)
 LOG_FILE = SCRIPT_DIR / "logs" / "logs.txt" 
 LOGS_DIR = SCRIPT_DIR / "logs"
 LOGS_DIR.mkdir(exist_ok=True)
-
+LLAMA_CPP_DIR = SCRIPT_DIR / "llama.cpp"
+LLAMA_CPP_URL = "https://github.com/ggml-org/llama.cpp/releases/download/b4609/llama-b4609-bin-win-cuda-cu12.4-x64.zip"
+LLAMA_CPP_URL2 = "https://github.com/ggml-org/llama.cpp/releases/download/b9181/cudart-llama-bin-win-cuda-12.4-x64.zip"
+LLAMA_CPP_ZIP = SCRIPT_DIR / "llama_cpp_temp.zip"
+LLAMA_CPP_ZIP2 = SCRIPT_DIR / "llama_cpp_temp2.zip"
 # VENV ЛОГИКА
 VENV_DIR = SCRIPT_DIR / ".venv"
 VENV_PYTHON = VENV_DIR / "Scripts" / "python.exe"
 VENV_PIP = VENV_DIR / "Scripts" / "pip.exe"
+total_steps = 10
+
 
 def ensure_venv():
     """Создать venv если нет"""
@@ -64,7 +74,7 @@ def test_lib_in_venv(lib_name):
 def log_to_file(message, is_error=False):
     """Все логи в logs.txt"""
     timestamp = time.strftime("%Y-%m-%d %H.%M.%S")
-    level = "❌ ОШИБКА" if is_error else "INFO" 
+    level = "no ОШИБКА" if is_error else "INFO" 
     log_line = f"[{timestamp}] {level}: {message}\n"
     
     with open(LOG_FILE, "a", encoding="utf-8") as f:
@@ -133,8 +143,11 @@ class TrainerGUI:
                         'psutil', 'sentencepiece', 'protobuf', 'accelerate', 'gguf']
         
         for lib in REQUIRED_LIBS:
-            status = "yes" if test_lib_in_venv(lib) else "❌"
+            status = "yes" if test_lib_in_venv(lib) else "no"
             self.libs_list.insert('end', f"{status} {lib}")
+        
+        llama_status = "yes" if self.test_llama_cpp() else "no"
+        self.libs_list.insert('end', f"{llama_status} llama.cpp")
         
         # ПРЯМАЯ проверка pip list
         pip_result = run_in_venv(["-m", "pip", "list"])
@@ -155,7 +168,7 @@ class TrainerGUI:
         
         # NVIDIA
         nvidia_ok = subprocess.run("nvidia-smi", capture_output=True).returncode == 0
-        self.sys_list.insert('end', f"NVIDIA: {'yes' if nvidia_ok else '❌'}")
+        self.sys_list.insert('end', f"NVIDIA: {'yes' if nvidia_ok else 'no'}")
 
         
         # CPU/RAM через venv
@@ -201,7 +214,8 @@ class TrainerGUI:
 
 
         self.update_libs_list()
-        self.log(" Анализ готов")
+        self.log(" Анализ готов")        
+        self.progress_label.config(text="Готов")
 
         
     def install_libs(self):
@@ -228,8 +242,10 @@ class TrainerGUI:
         def next_pkg(i=0):
             if i >= total_steps:
                 self.progress_var.set(100)
-                self.progress_label.config(text=" ГОТОВО")
-                self.root.after(2000, self.update_libs_list)
+                self.progress_label.config(text="Загрузка llama (1gb)")
+                self.libs_list.delete(0, 'end')
+                self.libs_list.insert(0, f" {total_steps+1}/{total_steps+1} Загрузка llama.cpp(~1GB)")
+                self.root.after(2000, self.ensure_llama_cpp)
                 return
 
             # Прогресс
@@ -239,7 +255,7 @@ class TrainerGUI:
                 pkg = simple_packages[i]
                 cmd = ["-m", "pip", "install", "--upgrade", pkg]
                 self.libs_list.delete(0, 'end')
-                self.libs_list.insert(0, f" {i+1}/{total_steps} {pkg}")
+                self.libs_list.insert(0, f" {i+1}/{total_steps+1} {pkg}")
                 result = run_in_venv(cmd)
                 status = "yes" if result.returncode == 0 else "no"
                 self.libs_list.insert('end', f"{status} {pkg}")
@@ -248,7 +264,7 @@ class TrainerGUI:
                 pkg_names, extra_args = complex_specs[idx]
                 cmd = ["-m", "pip", "install", "--upgrade"] + extra_args + pkg_names
                 self.libs_list.delete(0, 'end')
-                self.libs_list.insert(0, f" {i+1}/{total_steps} {' '.join(pkg_names)}")
+                self.libs_list.insert(0, f" {i+1}/{total_steps+1} {' '.join(pkg_names)}")
                 result = run_in_venv(cmd)
                 status = "yes" if result.returncode == 0 else "no"
                 self.libs_list.insert('end', f"{status} {' '.join(pkg_names)}")
@@ -256,6 +272,63 @@ class TrainerGUI:
             self.root.after(2000, lambda: next_pkg(i+1))
 
         next_pkg() 
+
+    def test_llama_cpp(self):
+        return LLAMA_CPP_DIR.exists()
+
+    def download_llama_cpp(self):
+        if LLAMA_CPP_DIR.exists() and (LLAMA_CPP_DIR / "llama-quantize.exe").exists():
+            self.log("llama.cpp уже скачан")
+            return
+
+        try:
+            self.log(f"Загрузка llama.cpp(~1GB)...")
+            LLAMA_CPP_DIR.mkdir(parents=True, exist_ok=True)
+
+            urllib.request.urlretrieve(LLAMA_CPP_URL, str(LLAMA_CPP_ZIP))
+            urllib.request.urlretrieve(LLAMA_CPP_URL2, str(LLAMA_CPP_ZIP2))
+            # Распаковка
+            self.log("Распаковка llama.cpp...")
+            with zipfile.ZipFile(str(LLAMA_CPP_ZIP), 'r') as zip_ref:
+                zip_ref.extractall(str(LLAMA_CPP_DIR))
+            with zipfile.ZipFile(str(LLAMA_CPP_ZIP2), 'r') as zip_ref:
+                zip_ref.extractall(str(LLAMA_CPP_DIR))
+
+            # Удаляем временныe zip
+            LLAMA_CPP_ZIP.unlink(missing_ok=True)
+            LLAMA_CPP_ZIP2.unlink(missing_ok=True)
+
+            # Проверяем
+            if self.test_llama_cpp():
+                self.log("llama.cpp готов к работе")
+            else:
+                raise FileNotFoundError("llama-quantize.exe не найден после распаковки")
+
+        except Exception as e:
+            self.log(f"Ошибка скачивания llama.cpp: {e}")
+            if LLAMA_CPP_DIR.exists():
+                shutil.rmtree(str(LLAMA_CPP_DIR), ignore_errors=True)
+            LLAMA_CPP_ZIP.unlink(missing_ok=True)
+            LLAMA_CPP_ZIP2.unlink(missing_ok=True)
+            raise
+
+    def ensure_llama_cpp(self):
+        """Гарантирует наличие llama.cpp"""
+        try:
+            if self.test_llama_cpp():
+                self.log("llama.cpp уже существует")
+            else:
+                self.log("Скачивается llama.cpp...")
+                self.download_llama_cpp()
+                self.log("llama.cpp скачан и готов")
+        except Exception as e:
+            self.log(f"Ошибка скачивания llama.cpp: {e}")
+            messagebox.showerror("Ошибка", f"Не удалось скачать llama.cpp:\n{e}")
+        finally:
+            self.update_libs_list()
+            self.libs_list.delete(0, 'end')
+            self.libs_list.insert(0, f" {total_steps+1}/{total_steps+1} Загрузка llama.cpp(~1GB)")
+            self.progress_label.config(text="llama загружена, идет повторный анализ")
 
     def setup_tabs(self):
         self.main_frame = ttk.Frame(self.notebook)
@@ -293,7 +366,7 @@ class TrainerGUI:
         btn_frame1.pack(pady=15)
         ttk.Button(btn_frame1, text="Анализ системы", 
                   command=lambda: self.safe_execute(self.analyze_system)).pack(side='left', padx=20)
-        ttk.Button(btn_frame1, text="Установить в .venv", 
+        ttk.Button(btn_frame1, text="Переустановить пакеты", 
                   command=lambda: self.safe_execute(self.install_libs)).pack(side='right', padx=20)
         
         progress_frame = ttk.Frame(self.main_frame)
@@ -377,9 +450,7 @@ class TrainerGUI:
         self.lora_alpha = self.create_param(adv_params, "α:", "16", row, 0, "Усиление LoRA (обычно r*2)")
         self.dropout = self.create_param(adv_params, "Dropout:", "0.1", row, 2, "Регуляризация (0.05-0.2)")
         row += 1
-        
-        self.grad_acc = self.create_param(adv_params, "Grad acc:", "4", row, 0, "Накопление градиента")
-        
+                
         # LoRA СЛОИ (ОРИГИНАЛЬНЫЙ НАБОР)
         ttk.Label(adv_params, text="LoRA слои:").grid(row=row+1, column=0, sticky='w', pady=(10,5))
         self.lora_targets = ttk.Combobox(adv_params, values=[
@@ -702,7 +773,8 @@ class TrainerGUI:
             'lora_r': int(self.lora_r.get() or 8),
             'lora_alpha': int(self.lora_alpha.get() or 16),
             'max_len': int(self.max_len.get() or 256),
-            'lora_targets': [t.strip() for t in self.lora_targets.get().split(",")]
+            'lora_targets': [t.strip() for t in self.lora_targets.get().split(",")],
+            'dropout': float(self.dropout.get() or 0.1)
         }
         
         self.log(f"[01] ОБУЧЕНИЕ LoRA (PID в новом окне)")
@@ -718,7 +790,7 @@ class TrainerGUI:
         process = subprocess.Popen(cmd, creationflags=CREATE_NEW_CONSOLE,
                                   cwd=str(Path(__file__).parent))
         
-        self.log(f"✅ ОБУЧЕНИЕ ЗАПУЩЕНО! PID: {process.pid}")
+        self.log(f"ОБУЧЕНИЕ ЗАПУЩЕНО! PID: {process.pid}")
         self.log(f"max_len: {params['max_len']}")
         
         process.wait()
@@ -727,7 +799,7 @@ class TrainerGUI:
         if process.returncode != 0:
             raise RuntimeError("Обучение упало!")
         
-        self.log(f"✅ LoRA готов: {self.lora_output}")
+        self.log(f"LoRA готов: {self.lora_output}")
 
         
     def merge_lora(self):
@@ -869,7 +941,7 @@ class TrainerGUI:
                                json.dumps(params)], creationflags=0x10)
         
         if result.returncode == 0:
-            self.log(f"✅ {temp_quant}")
+            self.log(f"{temp_quant}")
             messagebox.showinfo("Готово!", f"Квант: {temp_quant}")
         else:
             raise RuntimeError("Квантование упало!")
